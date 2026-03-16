@@ -1,0 +1,45 @@
+# Environment variables
+.env
+
+# Cookies and Auth State (contains auth tokens)
+cookies.json
+auth_state.json
+
+# Backups
+*.bak
+*.bak_new
+*.original
+*.new
+*.old_backup
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Sync data
+synced_ids.json
+
+# Downloaded media
+downloaded_videos/
+downloaded_covers/
+data/
+
+# Logs
+*.log
+server.log
+manual_sync*.log

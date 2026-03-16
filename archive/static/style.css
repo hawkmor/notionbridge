@@ -1,0 +1,288 @@
+/* --- Reusable StepCard Component --- */
+
+.step-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: box-shadow 0.2s ease;
+}
+
+.step-card:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    border-color: #cbd5e1;
+}
+
+/* Header Region */
+.step-card__header {
+    padding: 24px;
+    border-bottom: 1px solid var(--border-subtle);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #ffffff;
+}
+
+.step-card__title-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.step-card__index {
+    background: var(--status-bg-gray);
+    color: var(--text-secondary);
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.step-card__title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+/* Status Indicator */
+.step-card__status {
+    font-size: 0.75rem;
+    font-weight: 500;
+    padding: 4px 12px;
+    border-radius: 99px;
+    background: var(--status-bg-gray);
+    color: var(--status-text-gray);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.step-card__status.active {
+    background: var(--status-bg-green);
+    color: var(--status-text-green);
+}
+
+.step-card__status::before {
+    content: '';
+    display: block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: currentColor;
+}
+
+/* Body Region */
+.step-card__body {
+    padding: 24px;
+    background-color: #ffffff;
+}
+
+.step-card__description {
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+    margin-bottom: 24px;
+    line-height: 1.5;
+    max-width: 500px;
+}
+
+/* Action Region */
+.step-card__actions {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+/* Component-specific overrides for inner content */
+.step-card__content-area {
+    margin-bottom: 24px;
+    padding: 16px;
+    background: var(--bg-page);
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle);
+}
+
+/* Buttons (Component Scoped) */
+.step-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: 1px solid transparent;
+}
+
+.step-btn--primary {
+    background: var(--primary-blue);
+    color: white;
+}
+
+.step-btn--primary:hover {
+    background: var(--primary-blue-hover);
+}
+
+.step-btn--secondary {
+    background: white;
+    border-color: var(--border-subtle);
+    color: var(--text-secondary);
+}
+
+.step-btn--secondary:hover {
+    background: var(--status-bg-gray);
+    color: var(--text-primary);
+    border-color: #cbd5e1;
+}
+
+/* --- Global Utilities (Keep minimal) --- */
+:root {
+    --bg-page: #f8fafc;
+    --bg-card: #ffffff;
+    --text-primary: #0f172a;
+    --text-secondary: #64748b;
+    --border-subtle: #e2e8f0;
+    --primary-blue: #2563eb;
+    --primary-blue-hover: #1d4ed8;
+    --status-bg-gray: #f1f5f9;
+    --status-text-gray: #64748b;
+    --status-bg-green: #dcfce7;
+    --status-text-green: #166534;
+}
+
+body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background-color: var(--bg-page);
+    color: var(--text-primary);
+    line-height: 1.5;
+    padding: 60px 20px;
+    margin: 0;
+}
+
+.layout-container {
+    max-width: 640px;
+    margin: 0 auto;
+}
+
+.page-header {
+    text-align: center;
+    margin-bottom: 48px;
+}
+
+.page-header h1 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+    color: #1e293b;
+    letter-spacing: -0.5px;
+}
+
+.cards-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+}
+
+/* Inner Forms (Scoped to content-area if needed, but keeping global for simplicity within component) */
+.form-group {
+    margin-bottom: 16px;
+}
+
+.form-group label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 500;
+    margin-bottom: 8px;
+    color: var(--text-secondary);
+}
+
+input[type="text"],
+input[type="password"],
+textarea {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-family: inherit;
+    transition: border-color 0.2s;
+}
+
+input:focus,
+textarea:focus {
+    outline: none;
+    border-color: var(--primary-blue);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+/* Helpers */
+.hidden {
+    display: none !important;
+}
+
+.field-help {
+    font-size: 0.8rem;
+    color: #64748b;
+    margin-bottom: 8px;
+}
+
+.console-box {
+    background: #1e293b;
+    color: #cbd5e1;
+    font-family: monospace;
+    padding: 12px;
+    border-radius: 6px;
+    max-height: 150px;
+    overflow-y: auto;
+    margin-top: 16px;
+    font-size: 0.8rem;
+}
+
+.checkbox-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.page-footer {
+    text-align: center;
+    margin-top: 60px;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+/* Progress */
+.progress-area {
+    margin-top: 24px;
+}
+
+.progress-bar-track {
+    height: 6px;
+    background: var(--border-subtle);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 8px;
+}
+
+.progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--status-text-green);
+    transition: width 0.3s;
+}
+
+.status-text-row {
+    font-size: 0.9rem;
+    font-weight: 500;
+}
