@@ -2,6 +2,7 @@ import os
 import requests
 import math
 import json
+import traceback
 from urllib.parse import urlparse, urlunparse
 
 from typing import List, Dict, Optional, Callable
@@ -9,7 +10,7 @@ from notion_client import Client
 from logger import logger
 
 from app.config import Config
-from app.media import extract_video_frame, download_video, download_cover_image
+from app.media import extract_video_frame, download_video
 from app.utils import load_synced_ids, save_synced_ids, is_already_synced
 
 
@@ -55,8 +56,9 @@ def find_existing_page_id_by_url(notion: Client, database_id: str, url: str) -> 
             results = resp.get("results") or []
             if results:
                 return results[0].get("id")
-        except Exception:
+        except Exception as e:
             # If the DB doesn't have a URL property, or query fails, ignore and fallback to synced_ids.
+            logger.debug(f"  ⚠️ Query failed for {candidate}: {e}")
             continue
 
     return None
@@ -98,7 +100,8 @@ def upload_video_to_notion_api(notion: Client, page_id: str, video_path: str) ->
         response = requests.post(
             "https://api.notion.com/v1/file_uploads",  # Correct endpoint!
             headers=headers,
-            json=create_payload
+            json=create_payload,
+            timeout=30
         )
         
         if response.status_code != 200:
@@ -135,7 +138,8 @@ def upload_video_to_notion_api(notion: Client, page_id: str, video_path: str) ->
                     f"https://api.notion.com/v1/file_uploads/{upload_id}/send",  # Correct endpoint!
                     headers=send_headers,
                     files=files,
-                    data=data
+                    data=data,
+                    timeout=60
                 )
                 part_response.raise_for_status()
                 
@@ -145,7 +149,8 @@ def upload_video_to_notion_api(notion: Client, page_id: str, video_path: str) ->
         print(f"  3️⃣ Completing upload...")
         complete_response = requests.post(
             f"https://api.notion.com/v1/file_uploads/{upload_id}/complete",
-            headers=headers
+            headers=headers,
+            timeout=30
         )
         complete_response.raise_for_status()
         print(f"  ✓ Upload completed")
@@ -220,53 +225,9 @@ def create_notion_page_with_content(notion: Client, database_id: str, item: Dict
             ]
         }
     
-    # Add Created Date if available and in valid ISO format
-    if item.get("created_date"):
-        created_date = item["created_date"]
-        # Only add if it looks like a valid ISO date (contains dash or T)
-        if '-' in created_date or 'T' in created_date:
-            try:
-                properties["Created Date"] = {
-                    "date": {
-                        "start": created_date
-                    }
-                }
-            except:
-                pass  # Skip if invalid format
-    
-    # Extract and add Tags from content (only if Tags field exists in database)
-    # Note: Tags field must be manually created in Notion database first
-    # Look for hashtags in the content (e.g., #美食 #旅行)
-    tags_set = set()
-    
-    # Extract from item's tags field if exists
-    if item.get("tags"):
-        for tag in item["tags"]:
-            tags_set.add(tag)
-    
-    # Also extract hashtags from text content
-    if item.get("content"):
-        import re
-        for content_item in item["content"]:
-            if content_item.get("type") == "text":
-                text = content_item.get("content", "")
-                # Match Chinese/English hashtags: #tag or #标签
-                hashtags = re.findall(r'#([^\s#]+)', text)
-                for tag in hashtags:
-                    tags_set.add(tag)
-    
-    # Try to add Tags property (will be skipped if field doesn't exist)
-    # To use this feature, manually add a "Tags" multi-select field to your Notion database
-    if tags_set:
-        try:
-            properties["Tags"] = {
-                "multi_select": [
-                    {"name": tag[:100]} for tag in sorted(tags_set)[:20]
-                ]
-            }
-        except:
-            # Tags field doesn't exist in database, skip it
-            pass
+    # Note: Created Date and Tags are optional properties
+    # They will only be added if they exist in the Notion database
+    # The API will fail validation if these properties don't exist
     
     # Cover image
     cover_data = None
@@ -417,7 +378,7 @@ def create_notion_page_with_content(notion: Client, database_id: str, item: Dict
         
         # STEP 3: For video-only notes, extract first frame and add at bottom
         # Only do this if there are NO images in the content
-        has_images = any(item["type"] == "image" for item in item.get("content", []))
+        has_images = any(c["type"] == "image" for c in item.get("content", []))
         
         logger.debug(f"  🔍 Video frame check: first_video_path={bool(first_video_path)}, exists={os.path.exists(first_video_path) if first_video_path else False}, has_images={has_images}")
         
@@ -451,7 +412,8 @@ def create_notion_page_with_content(notion: Client, database_id: str, item: Dict
                     response = requests.post(
                         "https://api.notion.com/v1/file_uploads",
                         headers=headers,
-                        json=create_payload
+                        json=create_payload,
+                        timeout=30
                     )
                     response.raise_for_status()
                     upload_data = response.json()
@@ -466,7 +428,8 @@ def create_notion_page_with_content(notion: Client, database_id: str, item: Dict
                         upload_response = requests.post(
                             upload_url,
                             files=files,
-                            headers={"Notion-Version": "2022-06-28", "Authorization": f"Bearer {api_key}"}
+                            headers={"Notion-Version": "2022-06-28", "Authorization": f"Bearer {api_key}"},
+                            timeout=60
                         )
                         if upload_response.status_code != 200:
                             logger.debug(f"  ❌ File content upload failed: {upload_response.status_code}")

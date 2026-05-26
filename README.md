@@ -8,6 +8,7 @@
 - 自动下载视频和图片
 - 同步到 Notion 数据库
 - 增量同步（避免重复）
+- **CloakBrowser 反检测** - 通过 C++ 源码级补丁绕过小红书风控
 
 ## 快速开始
 
@@ -18,11 +19,8 @@
 python3 -m venv .venv
 source .venv/bin/activate
 
-# 安装依赖
+# 安装依赖（CloakBrowser 会自动下载 stealth Chromium）
 pip install -r requirements.txt
-
-# 安装 Playwright 浏览器
-playwright install chromium
 ```
 
 ### 2. 配置
@@ -39,13 +37,17 @@ nano .env
 - `NOTION_DATABASE_ID`: Notion 数据库 ID
 - `XHS_BOARD_URL`: 小红书专辑/收藏 URL
 
+可选配置（CloakBrowser 反检测）：
+- `CLOAKBROWSER_HUMANIZE=true`: 启用人类行为模拟（推荐）
+- `HEADLESS_MODE=false`: 显示浏览器窗口用于调试
+
 ### 3. 获取 Cookies
 
 ```bash
 python get_cookies.py
 ```
 
-在打开的浏览器中登录小红书，脚本会自动保存 Cookies。
+在打开的 CloakBrowser 中登录小红书，脚本会自动保存 Cookies。
 
 ### 4. 运行同步
 
@@ -70,16 +72,17 @@ python app/main.py
 xiaohongshu-to-notion/
 ├── app/
 │   ├── main.py          # 主程序入口
-│   ├── xhs.py           # 小红书爬虫
+│   ├── xhs.py           # 小红书爬虫（CloakBrowser）
 │   ├── notion.py        # Notion API
 │   ├── config.py        # 配置管理
 │   ├── logger.py        # 日志
 │   ├── utils.py         # 工具函数
 │   └── media.py         # 媒体处理
-├── get_cookies.py       # Cookie 获取工具
+├── get_cookies.py       # Cookie 获取工具（CloakBrowser）
+├── browser_profile/     # CloakBrowser 持久化 profile
 ├── .env                 # 配置文件
 ├── requirements.txt     # Python 依赖
-└── README.md           # 本文件
+└── README.md            # 本文件
 ```
 
 ## 常见问题
@@ -102,6 +105,14 @@ python get_cookies.py
 ```bash
 LOG_LEVEL=verbose python app/main.py
 ```
+
+### 反检测问题
+
+如果仍然触发风控：
+1. 确保 `CLOAKBROWSER_HUMANIZE=true`
+2. 使用 `HEADLESS_MODE=false` 显示浏览器窗口
+3. 检查 `browser_profile/` 目录是否存在（持久化 session）
+4. 确保 IP 是住宅 IP（不要用服务器/Docker）
 
 ## 下一步
 

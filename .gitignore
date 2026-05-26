@@ -5,6 +5,9 @@
 cookies.json
 auth_state.json
 
+# CloakBrowser persistent profile
+browser_profile/
+
 # Backups
 *.bak
 *.bak_new

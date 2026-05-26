@@ -1,5 +1,6 @@
 requests
 playwright
+cloakbrowser
 python-dotenv
 notion-client
 fastapi

@@ -41,7 +41,11 @@ class Config:
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'user')
     ENV_PATH = env_path
     
-    # Standardized User-Agent to ensure consistency between login and sync
+    # CloakBrowser Anti-Detection Settings
+    CLOAKBROWSER_HUMANIZE = os.getenv('CLOAKBROWSER_HUMANIZE', 'true').lower() == 'true'
+    CLOAKBROWSER_PROFILE_DIR = os.getenv('CLOAKBROWSER_PROFILE_DIR', './browser_profile')
+    
+    # Standardized User-Agent (fallback, CloakBrowser handles this automatically)
     USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
     
     # ============================================
@@ -111,6 +115,8 @@ class Config:
         cls.USE_REAL_SCRAPER = os.getenv('USE_REAL_SCRAPER', 'true').lower() == 'true'
         cls.HEADLESS_MODE = os.getenv('HEADLESS_MODE', 'true').lower() == 'true'
         cls.LOG_LEVEL = os.getenv('LOG_LEVEL', 'user')
+        cls.CLOAKBROWSER_HUMANIZE = os.getenv('CLOAKBROWSER_HUMANIZE', 'true').lower() == 'true'
+        cls.CLOAKBROWSER_PROFILE_DIR = os.getenv('CLOAKBROWSER_PROFILE_DIR', './browser_profile')
 
 
 # Auto-initialize storage on module import

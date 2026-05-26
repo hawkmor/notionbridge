@@ -1,5 +1,5 @@
-# 使用 Playwright 官方提供的 Python 运行环境（已预装所有浏览器依赖）
-FROM mcr.microsoft.com/playwright/python:v1.45.0-jammy
+# 使用 CloakBrowser 官方 Docker 镜像（已预装 stealth Chromium 和所有依赖）
+FROM cloakhq/cloakbrowser
 
 WORKDIR /app
 
@@ -11,12 +11,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # 创建必要的目录
-RUN mkdir -p data/downloaded_videos data/downloaded_covers logs
+RUN mkdir -p data/downloaded_videos data/downloaded_covers logs browser_profile
 
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1
 ENV USE_REAL_SCRAPER=true
 ENV HEADLESS_MODE=true
+ENV CLOAKBROWSER_HUMANIZE=true
 
 # 默认运行同步逻辑
 CMD ["python", "app/main.py"]

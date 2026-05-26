@@ -3,7 +3,7 @@ import json
 import time
 import random
 from typing import List, Dict, Optional
-from playwright.sync_api import sync_playwright, Browser, Page
+from cloakbrowser import launch, launch_persistent_context
 from logger import logger
 from dotenv import load_dotenv
 from app.config import Config
@@ -12,102 +12,97 @@ from app.config import Config
 COOKIE_FILE = Config.COOKIE_FILE
 
 
-def save_cookies(page: Page):
+def save_cookies(page):
     """Save browser cookies to file for session persistence."""
     cookies = page.context.cookies()
     with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
         json.dump(cookies, f, ensure_ascii=False, indent=2)
     logger.verbose(f"✅ Cookies saved to {COOKIE_FILE}")
 
-def load_cookies(page: Page) -> bool:
-    """Load cookies from file if available."""
-    if not os.path.exists(COOKIE_FILE):
-        return False
-    
-    try:
-        with open(COOKIE_FILE, 'r', encoding='utf-8') as f:
-            cookies = json.load(f)
-        page.context.add_cookies(cookies)
-        print(f"✅ Loaded cookies from {COOKIE_FILE}")
-        return True
-    except Exception as e:
-        logger.verbose(f"⚠️ Failed to load cookies: {e}")
-        return False
-
 def interactive_login(timeout: int = 300) -> bool:
     """
-    Launches a headed browser for the user to log in manually.
+    Launches a headed CloakBrowser for the user to log in manually.
     Polls for login success (cookies/local storage) and saves cookies.
     Returns True if login was successful.
     """
     print("\n" + "="*50)
-    logger.user("🔐 STARTING INTERACTIVE LOGIN")
+    logger.user("🔐 STARTING INTERACTIVE LOGIN (CloakBrowser)")
     logger.user("="*50)
     
     try:
-        with sync_playwright() as p:
-            # Launch headed browser
-            browser = p.chromium.launch(headless=False)
-            context = browser.new_context(
-                viewport={'width': 1280, 'height': 800},
-                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-            )
-            page = context.new_page()
-            
-            # Load existing if any
-            load_cookies(page)
-            
-            logger.verbose("🚀 Navigating to Xiaohongshu...")
-            page.goto("https://www.xiaohongshu.com")
-            
-            logger.user(f"⏳ Waiting for login (timeout: {timeout}s)...")
-            start_time = time.time()
-            is_logged_in = False
-            
-            while time.time() - start_time < timeout:
-                # Check for login indicators
-                try:
-                    # 1. Check data-logged attribute
-                    logged_val = page.get_attribute("#global", "data-logged")
-                    
-                    # 2. Check for avatar/user icon
-                    user_icon = page.query_selector('[class*="user-icon"], [class*="avatar"]')
-                    
-                    # 3. Check for cookies directly
-                    cookies = context.cookies()
-                    sid_cookie = next((c for c in cookies if c["name"] == "web_session"), None)
-                    
-                    if logged_val == "1" or user_icon or sid_cookie:
-                        logger.user("✅ Login detected!")
-                        # Wait a moment for fully settled state
-                        page.wait_for_timeout(2000)
-                        save_cookies(page)
-                        is_logged_in = True
-                        break
-                        
-                    # Check if user closed the browser
-                    if page.is_closed():
-                        logger.user("⚠️ Browser closed by user")
-                        break
-                        
-                except Exception:
-                    # Page might be closed or navigating
-                    if page.is_closed():
-                        break
-                    pass
-                
-                time.sleep(1)
-            
-            if not is_logged_in and not page.is_closed():
-                logger.user("⏰ Login timed out")
-            
+        # Use persistent context for better anti-detection and session persistence
+        profile_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "browser_profile")
+        os.makedirs(profile_dir, exist_ok=True)
+        
+        context = launch_persistent_context(
+            profile_dir,
+            headless=False,
+            humanize=True,
+            viewport={'width': 1280, 'height': 800},
+        )
+        page = context.new_page()
+        
+        # Load existing cookies if available
+        if os.path.exists(COOKIE_FILE):
             try:
-                browser.close()
-            except:
-                pass
+                with open(COOKIE_FILE, 'r', encoding='utf-8') as f:
+                    cookies = json.load(f)
+                context.add_cookies(cookies)
+                print(f"✅ Loaded cookies from {COOKIE_FILE}")
+            except Exception as e:
+                logger.verbose(f"⚠️ Failed to load cookies: {e}")
+        
+        logger.verbose("🚀 Navigating to Xiaohongshu...")
+        page.goto("https://www.xiaohongshu.com")
+        
+        logger.user(f"⏳ Waiting for login (timeout: {timeout}s)...")
+        start_time = time.time()
+        is_logged_in = False
+        
+        while time.time() - start_time < timeout:
+            # Check for login indicators
+            try:
+                # 1. Check data-logged attribute
+                logged_val = page.get_attribute("#global", "data-logged")
                 
-            return is_logged_in
+                # 2. Check for avatar/user icon
+                user_icon = page.query_selector('[class*="user-icon"], [class*="avatar"]')
+                
+                # 3. Check for cookies directly
+                cookies = context.cookies()
+                sid_cookie = next((c for c in cookies if c["name"] == "web_session"), None)
+                
+                if logged_val == "1" or user_icon or sid_cookie:
+                    logger.user("✅ Login detected!")
+                    # Wait a moment for fully settled state
+                    page.wait_for_timeout(2000)
+                    save_cookies(page)
+                    is_logged_in = True
+                    break
+                    
+                # Check if user closed the browser
+                if page.is_closed():
+                    logger.user("⚠️ Browser closed by user")
+                    break
+                    
+            except Exception:
+                # Page might be closed or navigating
+                if page.is_closed():
+                    break
+                pass
             
+            time.sleep(1)
+        
+        if not is_logged_in and not page.is_closed():
+            logger.user("⏰ Login timed out")
+        
+        try:
+            context.close()
+        except:
+            pass
+            
+        return is_logged_in
+        
     except Exception as e:
         logger.user(f"❌ Error during interactive login: {e}")
         return False
@@ -132,7 +127,7 @@ def _try_selectors(root, selector_list, all=False):
             continue
     return [] if all else None
 
-def scrape_note_from_modal(page: Page, item_element, captured_video_urls: List[str] = None) -> Dict:
+def scrape_note_from_modal(page, item_element, captured_video_urls: List[str] = None) -> Dict:
     """
     Extract content from Xiaohongshu note modal/popup with improved robustness.
     """
@@ -265,7 +260,7 @@ def scrape_note_from_modal(page: Page, item_element, captured_video_urls: List[s
         return None
 
 
-def scrape_board_items(page: Page, board_url: str) -> List[Dict]:
+def scrape_board_items(page, board_url: str) -> List[Dict]:
     """
     Scrape items from a Xiaohongshu board/album.
     """
@@ -503,7 +498,7 @@ def scrape_board_items(page: Page, board_url: str) -> List[Dict]:
 def fetch_xhs_favorites() -> List[Dict]:
     """
     Main function to fetch Xiaohongshu board items.
-    Uses real scraper if enabled, otherwise returns mock data.
+    Uses CloakBrowser with anti-detection for stealth scraping.
     """
     use_real = Config.USE_REAL_SCRAPER
     headless = Config.HEADLESS_MODE
@@ -517,62 +512,66 @@ def fetch_xhs_favorites() -> List[Dict]:
         logger.user("❌ XHS_BOARD_URL not set in .env file")
         return get_mock_data()
     
-    logger.verbose(f"🚀 Starting real Xiaohongshu scraper for board: {board_url}")
+    logger.verbose(f"🚀 Starting CloakBrowser scraper for board: {board_url}")
     
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=headless)
+        # Use persistent context for better anti-detection
+        profile_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "browser_profile")
+        os.makedirs(profile_dir, exist_ok=True)
+        
+        context = launch_persistent_context(
+            profile_dir,
+            headless=headless,
+            humanize=True,
+            viewport={'width': 1280, 'height': 720},
+        )
+        
+        # Load cookies from cookies.json into the persistent context
+        if os.path.exists(Config.COOKIE_FILE):
+            try:
+                with open(Config.COOKIE_FILE, 'r', encoding='utf-8') as f:
+                    cookies = json.load(f)
+                context.add_cookies(cookies)
+                logger.verbose(f"✅ Loaded {len(cookies)} cookies from {Config.COOKIE_FILE}")
+            except Exception as e:
+                logger.verbose(f"⚠️ Failed to load cookies: {e}")
+        
+        page = context.new_page()
+        
+        # 1. Verify Login State
+        logger.verbose("🔐 Verifying login state...")
+        page.goto("https://www.xiaohongshu.com")
+        page.wait_for_timeout(3000)
+        
+        # Check for data-logged attribute (1 = logged in)
+        is_logged_in = page.evaluate('() => document.querySelector("#global")?.getAttribute("data-logged") == "1"')
+        
+        if not is_logged_in:
+            logger.user("⚠️ Login verification FAILED")
             
-            # 1. Context Options
-            context_opts = {
-                "viewport": {'width': 1280, 'height': 720},
-                "user_agent": Config.USER_AGENT
-            }
+            # Take debug screenshot to see what's happening
+            os.makedirs("logs", exist_ok=True)
+            screenshot_path = f"logs/login_failed_{int(time.time())}.png"
+            page.screenshot(path=screenshot_path)
+            logger.user(f"📸 Screenshot saved to {screenshot_path}")
             
-            # 2. Load Auth State (Cookies + LocalStorage)
-            if os.path.exists(Config.AUTH_STATE_FILE):
-                logger.verbose(f"🔐 Loading full auth state from {Config.AUTH_STATE_FILE}")
-                context_opts["storage_state"] = Config.AUTH_STATE_FILE
-            
-            context = browser.new_context(**context_opts)
-            page = context.new_page()
-            
-            # 3. Verify Login State
-            logger.verbose("🔐 Verifying login state...")
-            page.goto("https://www.xiaohongshu.com")
-            page.wait_for_timeout(3000)
-            
-            # Check for data-logged attribute (1 = logged in)
-            is_logged_in = page.evaluate('() => document.querySelector("#global")?.getAttribute("data-logged") == "1"')
-            
-            if not is_logged_in:
-                logger.user("⚠️ Login verification FAILED")
-                
-                # Take debug screenshot to see what's happening (critical for NAS/Docker)
-                os.makedirs("logs", exist_ok=True)
-                screenshot_path = f"logs/login_failed_{int(time.time())}.png"
-                page.screenshot(path=screenshot_path)
-                logger.user(f"📸 Screenshot saved to {screenshot_path} (check this to see why login failed)")
-                
-                # If headless, we can't do interactive login. If not, we can try.
-                if headless:
-                    logger.user("❌ Running in HEADLESS mode, cannot perform interactive login.")
-                    logger.user("💡 Please run 'python get_cookies.py' on your local machine and sync auth_state.json to NAS.")
-                    browser.close()
-                    return get_mock_data()
-                else:
-                    logger.user("🔄 Attempting interactive login...")
-                    # Note: interactive_login needs to be updated or handled
-                    browser.close()
-                    interactive_login()
-                    return fetch_xhs_favorites() # Recursive retry
-            
-            # 4. Access the board and scrape
-            favorites = scrape_board_items(page, board_url)
-            browser.close()
-            
-            return favorites or get_mock_data()
-            
+            if headless:
+                logger.user("❌ Running in HEADLESS mode, cannot perform interactive login.")
+                logger.user("💡 Please run 'python get_cookies.py' on your local machine.")
+                context.close()
+                return get_mock_data()
+            else:
+                logger.user("🔄 Attempting interactive login...")
+                context.close()
+                interactive_login()
+                return fetch_xhs_favorites() # Recursive retry
+        
+        # 2. Access the board and scrape
+        favorites = scrape_board_items(page, board_url)
+        context.close()
+        
+        return favorites or get_mock_data()
+        
     except Exception as e:
         logger.user(f"❌ Scraper error: {e}")
         return get_mock_data()
