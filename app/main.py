@@ -7,9 +7,14 @@ import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from xhs import fetch_xhs_favorites
-from notion import push_to_notion
-from logger import logger
+try:
+    from xhs import fetch_xhs_favorites
+    from notion import push_to_notion
+    from logger import logger
+except ImportError:
+    from app.xhs import fetch_xhs_favorites
+    from app.notion import push_to_notion
+    from app.logger import logger
 
 def _as_bool(v, default=False):
     if v is None:
@@ -130,7 +135,7 @@ def run_sync_logic(incremental=True, log_callback=None):
         logger.sync_summary(success_count, skip_count, fail_count)
         
         _log(f"🏁 Sync completed. {success_count} new items added.")
-        return True
+        return fail_count == 0
         
     except Exception as e:
         logger.user("❌ 同步失败")
@@ -146,7 +151,8 @@ def main():
     inc = True
     if any(arg in ("--full", "--backfill") for arg in sys.argv[1:]):
         inc = False
-    run_sync_logic(incremental=inc)
+    ok = run_sync_logic(incremental=inc)
+    sys.exit(0 if ok else 1)
 
 if __name__ == "__main__":
     main()

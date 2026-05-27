@@ -23,6 +23,7 @@ __pycache__/
 .Python
 venv/
 env/
+.venv/
 
 # IDE
 .vscode/
@@ -43,6 +44,7 @@ downloaded_covers/
 data/
 
 # Logs
+logs/
 *.log
 server.log
 manual_sync*.log

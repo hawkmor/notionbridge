@@ -6,13 +6,17 @@
 - 修复 Tags 未写入 Notion 数据库的问题
 - 兼容 `notion-client 2.7.0` API 变更（改用 raw HTTP requests）
 - 移除 `notion.databases.query` 等已废弃方法调用
-- Tags 更新改为创建页面后单独写入（避免属性不存在时验证失败）
+- Tags 仅在数据库存在 Multi-select 类型的 `Tags`/`标签` 属性时写入
+- 修复页面正文、图片、视频封面仍调用旧 SDK 导致内容块丢失的问题
+- 同步前读取 Notion 数据库 schema，只写入实际存在且类型匹配的字段
+- 真实抓取失败时不再回落到 mock 数据，避免把示例数据写入 Notion
 
 ### 技术细节
 - 新增 `_notion_request()` 辅助函数封装 Notion API 调用
 - `find_existing_page_id_by_url()` 改用 raw POST 请求
-- `create_notion_page_with_content()` 分两步：先创建页面，再更新 Tags
+- `create_notion_page_with_content()` 根据数据库 schema 构造字段，并用 raw API 追加内容块
 - `upload_video_to_notion_api()` 改用 raw PATCH 请求
+- `Created Date` 如果是 Notion `created_time` 自动字段，不会被手动写入；需要小红书发布日期时应新增 `Publish Date` Date 字段
 
 ---
 
@@ -34,7 +38,6 @@
 
 ### 项目清理
 - 删除过期备份文件（`.bak`, `.original`, `.old_backup`, `.new`）
-- 删除 `REFACTORING_PLAN.md`（过时的重构计划）
 - 删除 `archive/` 目录（旧前端代码）
 
 ### 配置变更

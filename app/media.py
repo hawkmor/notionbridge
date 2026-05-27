@@ -1,7 +1,10 @@
 import os
 import requests
 import subprocess
-from logger import logger
+try:
+    from logger import logger
+except ImportError:
+    from app.logger import logger
 
 def extract_video_frame(video_path: str, output_path: str) -> bool:
     """

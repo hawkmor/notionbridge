@@ -1,16 +1,20 @@
 import os
 import requests
 import math
-import json
 import traceback
+import re
+from datetime import datetime
 from urllib.parse import urlparse, urlunparse
 
-from typing import List, Dict, Optional, Callable
-from logger import logger
+from typing import List, Dict, Optional, Callable, Any
+try:
+    from logger import logger
+except ImportError:
+    from app.logger import logger
 
 from app.config import Config
 from app.media import extract_video_frame, download_video
-from app.utils import load_synced_ids, save_synced_ids, is_already_synced
+from app.utils import load_synced_ids, save_synced_ids
 
 # Notion API helpers (using raw requests for compatibility with notion-client 2.7.0+)
 NOTION_API_VERSION = "2022-06-28"
@@ -27,6 +31,146 @@ def _notion_request(method: str, path: str, body: dict = None) -> dict:
     response = requests.request(method, url, headers=headers, json=body, timeout=30)
     response.raise_for_status()
     return response.json()
+
+
+def _append_blocks(page_id: str, blocks: List[Dict[str, Any]]) -> None:
+    """Append child blocks using raw Notion API requests."""
+    for i in range(0, len(blocks), 100):
+        _notion_request("PATCH", f"/blocks/{page_id}/children", {
+            "children": blocks[i:i + 100]
+        })
+
+
+def _get_database_properties(database_id: str) -> Dict[str, Dict[str, Any]]:
+    """Fetch database properties so writes match the user's actual schema."""
+    database = _notion_request("GET", f"/databases/{database_id}")
+    return database.get("properties", {}) or {}
+
+
+def _find_property(properties: Dict[str, Dict[str, Any]], names: List[str], prop_type: str = None) -> Optional[str]:
+    """Find a property by preferred names, optionally constrained by Notion type."""
+    lowered = {name.lower(): name for name in properties}
+    for name in names:
+        actual = lowered.get(name.lower())
+        if actual and (prop_type is None or properties[actual].get("type") == prop_type):
+            return actual
+
+    if prop_type == "title":
+        for name, prop in properties.items():
+            if prop.get("type") == "title":
+                return name
+
+    return None
+
+
+def _parse_xhs_date(value: str) -> Optional[str]:
+    """Parse common XHS date strings into YYYY-MM-DD for Notion date properties."""
+    if not value:
+        return None
+    text = str(value).strip()
+
+    match = re.search(r"(20\d{2})[./年-](\d{1,2})[./月-](\d{1,2})", text)
+    if match:
+        year, month, day = match.groups()
+        return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+
+    match = re.search(r"(?<!\d)(\d{1,2})[./月-](\d{1,2})(?:日)?", text)
+    if match:
+        month, day = match.groups()
+        year = datetime.now().year
+        return f"{year:04d}-{int(month):02d}-{int(day):02d}"
+
+    return None
+
+
+def _text_property(value: str) -> Dict[str, Any]:
+    return {
+        "rich_text": [
+            {
+                "type": "text",
+                "text": {"content": str(value)[:2000]}
+            }
+        ]
+    }
+
+
+def _plain_text_from_content(item: Dict[str, Any]) -> str:
+    parts = []
+    for content_item in item.get("content") or []:
+        if content_item.get("type") == "text" and content_item.get("content"):
+            parts.append(str(content_item["content"]))
+    return "\n".join(parts).strip()
+
+
+def _build_page_properties(item: Dict[str, Any], database_properties: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Build Notion page properties from scraped item data and actual DB schema."""
+    properties: Dict[str, Any] = {}
+
+    title_name = _find_property(database_properties, ["Name", "Title", "标题", "名称"], "title")
+    if not title_name:
+        raise ValueError("Notion database must contain a title property")
+    properties[title_name] = {
+        "title": [
+            {
+                "type": "text",
+                "text": {"content": str(item.get("title") or "Untitled")[:2000]}
+            }
+        ]
+    }
+
+    url_name = _find_property(database_properties, ["URL", "Url", "Link", "链接", "原文链接"], "url")
+    if url_name and item.get("url"):
+        properties[url_name] = {"url": item["url"]}
+
+    author_name = _find_property(database_properties, ["Author", "作者", "Creator", "博主"], "rich_text")
+    if author_name and item.get("author"):
+        properties[author_name] = _text_property(item["author"])
+
+    date_name = _find_property(database_properties, ["Publish Date", "Published", "Date", "发布日期", "日期", "Created Date", "创建日期"], "date")
+    parsed_date = _parse_xhs_date(item.get("created_date", ""))
+    if date_name and parsed_date:
+        properties[date_name] = {"date": {"start": parsed_date}}
+
+    tags_name = _find_property(database_properties, ["Tags", "Tag", "标签"], "multi_select")
+    tags = _collect_tags(item)
+    if tags_name and tags:
+        properties[tags_name] = {
+            "multi_select": [{"name": tag[:100]} for tag in tags[:20]]
+        }
+
+    content_text = _plain_text_from_content(item)
+    content_name = _find_property(database_properties, ["Content", "Description", "Desc", "正文", "描述", "内容"], "rich_text")
+    if content_name and content_text:
+        properties[content_name] = _text_property(content_text)
+
+    return properties
+
+
+def update_existing_page_properties(
+    page_id: str,
+    item: Dict[str, Any],
+    database_properties: Dict[str, Dict[str, Any]],
+) -> None:
+    """Refresh metadata for an already-synced page without touching page blocks."""
+    properties = _build_page_properties(item, database_properties)
+    if properties:
+        _notion_request("PATCH", f"/pages/{page_id}", {"properties": properties})
+
+
+def _collect_tags(item: Dict[str, Any]) -> List[str]:
+    ignored_tags = {"作者"}
+    tags_set = set(str(tag).strip().replace("#", "") for tag in item.get("tags", []) if str(tag).strip())
+    tags_set = {tag for tag in tags_set if tag not in ignored_tags}
+
+    for content_item in item.get("content") or []:
+        if content_item.get("type") == "text":
+            text = content_item.get("content", "")
+            for tag in re.findall(r"#([^\s#]+)", text):
+                tag = tag.strip()
+                if tag and tag not in ignored_tags:
+                    tags_set.add(tag)
+
+    return sorted(tags_set)
 
 
 # =======================
@@ -47,7 +191,7 @@ def normalize_xhs_url(url: str) -> str:
         return url.strip().rstrip("/")
 
 
-def find_existing_page_id_by_url(database_id: str, url: str) -> Optional[str]:
+def find_existing_page_id_by_url(database_id: str, url: str, url_property: str = "URL") -> Optional[str]:
     """Return existing Notion page id whose URL property equals the given url (or normalized url)."""
     if not url:
         return None
@@ -62,7 +206,7 @@ def find_existing_page_id_by_url(database_id: str, url: str) -> Optional[str]:
         try:
             resp = _notion_request("POST", f"/databases/{database_id}/query", {
                 "filter": {
-                    "property": "URL",
+                    "property": url_property,
                     "url": {"equals": candidate}
                 },
                 "page_size": 1
@@ -77,7 +221,7 @@ def find_existing_page_id_by_url(database_id: str, url: str) -> Optional[str]:
 
     return None
 
-def upload_video_to_notion_api(notion: Client, page_id: str, video_path: str) -> bool:
+def upload_video_to_notion_api(page_id: str, video_path: str) -> bool:
     """
     Upload video to Notion using official API multi-part upload via HTTP requests.
     Returns True if successful, False otherwise.
@@ -88,7 +232,7 @@ def upload_video_to_notion_api(notion: Client, page_id: str, video_path: str) ->
         # Get file size and API key
         file_size = os.path.getsize(video_path)
         filename = os.path.basename(video_path)
-        api_key = os.getenv("NOTION_API_KEY")
+        api_key = Config.NOTION_API_KEY
         
         # Notion API requires multi-part upload for files > 20MB
         chunk_size = 10 * 1024 * 1024  # 10MB chunks
@@ -202,40 +346,15 @@ def upload_video_to_notion_api(notion: Client, page_id: str, video_path: str) ->
         return False
 
 
-def create_notion_page_with_content(database_id: str, item: Dict):
+def create_notion_page_with_content(
+    database_id: str,
+    item: Dict,
+    database_properties: Dict[str, Dict[str, Any]],
+):
     """
     Create a Notion page with full content (text, images, videos).
     """
-    # Prepare properties for the database row (without Tags first)
-    properties = {
-        "Name": {
-            "title": [
-                {
-                    "text": {
-                        "content": item["title"][:2000]  # Notion title limit
-                    }
-                }
-            ]
-        }
-    }
-    
-    # Only add URL if it's not empty
-    if item.get("url"):
-        properties["URL"] = {
-            "url": item["url"]
-        }
-    
-    # Add Author if available
-    if item.get("author"):
-        properties["Author"] = {
-            "rich_text": [
-                {
-                    "text": {
-                        "content": item["author"]
-                    }
-                }
-            ]
-        }
+    properties = _build_page_properties(item, database_properties)
     
     # Cover image
     cover_data = None
@@ -247,7 +366,6 @@ def create_notion_page_with_content(database_id: str, item: Dict):
             }
         }
     
-    # Create the page first (without Tags to avoid validation errors)
     body = {
         "parent": {"database_id": database_id},
         "properties": properties
@@ -258,35 +376,7 @@ def create_notion_page_with_content(database_id: str, item: Dict):
     page = _notion_request("POST", "/pages", body)
     
     page_id = page["id"]
-    logger.verbose(f"  ✓ Created page: {item['title']}")
-    
-    # Try to add Tags separately (if property exists in database)
-    if item.get("tags"):
-        tags_set = set(item["tags"])
-        # Also extract hashtags from text content
-        if item.get("content"):
-            import re
-            for content_item in item["content"]:
-                if content_item.get("type") == "text":
-                    text = content_item.get("content", "")
-                    hashtags = re.findall(r'#([^\s#]+)', text)
-                    for tag in hashtags:
-                        tags_set.add(tag)
-        
-        if tags_set:
-            try:
-                _notion_request("PATCH", f"/pages/{page_id}", {
-                    "properties": {
-                        "Tags": {
-                            "multi_select": [
-                                {"name": tag[:100]} for tag in sorted(tags_set)[:20]
-                            ]
-                        }
-                    }
-                })
-                logger.verbose(f"  ✓ Tags: {list(tags_set)[:5]}")
-            except Exception as e:
-                logger.debug(f"  ⚠️ Tags update failed (property may not exist): {e}")
+    logger.verbose(f"  ✓ Created page: {item.get('title', 'Untitled')}")
     
     # Now add content blocks
     if item.get("content"):
@@ -329,7 +419,7 @@ def create_notion_page_with_content(database_id: str, item: Dict):
                     first_video_path = video_path
                 
                 try:
-                    upload_video_to_notion_api(notion, page_id, video_path)
+                    upload_video_to_notion_api(page_id, video_path)
                     print(f"  ✅ Video uploaded (will appear at top)")
                 except Exception as e:
                     logger.debug(f"  ⚠️ Video upload failed: {e}")
@@ -380,14 +470,12 @@ def create_notion_page_with_content(database_id: str, item: Dict):
                 # Split into chunks of 100 blocks
                 for i in range(0, len(blocks), 100):
                     chunk = blocks[i:i+100]
-                    notion.blocks.children.append(
-                        block_id=page_id,
-                        children=chunk
-                    )
+                    _append_blocks(page_id, chunk)
                 logger.verbose(f"  ✓ Added {len(blocks)} content blocks")
 
             except Exception as e:
-                logger.debug(f"  ⚠️ Failed to add content blocks: {e}")
+                logger.debug(f"  ✗ Failed to add content blocks: {e}")
+                raise
         
         # STEP 3: For video-only notes, extract first frame and add at bottom
         # Only do this if there are NO images in the content
@@ -406,7 +494,7 @@ def create_notion_page_with_content(database_id: str, item: Dict):
                 try:
                     logger.verbose("  📸 Uploading video frame...")
                     
-                    api_key = os.getenv("NOTION_API_KEY")
+                    api_key = Config.NOTION_API_KEY
                     filename = os.path.basename(cover_path)
                     
                     headers = {
@@ -451,16 +539,16 @@ def create_notion_page_with_content(database_id: str, item: Dict):
                         logger.verbose("  ✓ Video frame content uploaded")
                     
                     # Step 3: Add as image block using file_upload type
-                    notion.blocks.children.append(
-                        block_id=page_id,
-                        children=[{
+                    _append_blocks(
+                        page_id,
+                        [{
                             'object': 'block',
                             'type': 'image',
                             'image': {
                                 'type': 'file_upload',
                                 'file_upload': {'id': upload_id}
                             }
-                        }]
+                        }],
                     )
                     logger.debug("  ✅ Video frame added at bottom!")
                 except Exception as e:
@@ -476,7 +564,6 @@ def push_to_notion(favorites: List[Dict], incremental: bool = True, log_callback
     Returns:
         tuple: (success_count, skip_count, fail_count)
     """
-    from logger import logger
     api_key = Config.NOTION_API_KEY
     database_id = Config.NOTION_DATABASE_ID
 
@@ -496,6 +583,8 @@ def push_to_notion(favorites: List[Dict], incremental: bool = True, log_callback
 
     logger.verbose(f"Starting sync to Notion database: {database_id}...")
     logger.verbose(f"Will process {len(favorites)} pages")
+    database_properties = _get_database_properties(database_id)
+    url_property = _find_property(database_properties, ["URL", "Url", "Link", "链接", "原文链接"], "url")
 
     success_count = 0
     fail_count = 0
@@ -507,11 +596,13 @@ def push_to_notion(favorites: List[Dict], incremental: bool = True, log_callback
 
             # Always prevent duplicates by checking Notion first (works even in --full mode)
             existing_page_id = None
-            if note_url:
-                existing_page_id = find_existing_page_id_by_url(database_id, note_url)
+            if note_url and url_property:
+                existing_page_id = find_existing_page_id_by_url(database_id, note_url, url_property)
 
             # Incremental mode: skip if we've already synced (local cache) OR Notion already has it
             if incremental and note_url and (note_url in synced_ids or existing_page_id):
+                if existing_page_id:
+                    update_existing_page_properties(existing_page_id, item, database_properties)
                 skip_count += 1
                 logger.verbose(f"⏭️ Skipping: {item.get('title', 'Untitled')}")
                 logger.verbose(f"   ↳ reason: {'exists in Notion' if existing_page_id else 'exists in synced_ids.json'}")
@@ -519,15 +610,17 @@ def push_to_notion(favorites: List[Dict], incremental: bool = True, log_callback
 
             # Full/backfill mode: do NOT create duplicates; skip if Notion already has this URL
             if not incremental and existing_page_id:
+                update_existing_page_properties(existing_page_id, item, database_properties)
                 skip_count += 1
                 logger.verbose(f"⏭️ Skipping (full): {item.get('title', 'Untitled')}")
                 logger.verbose("   ↳ reason: exists in Notion")
                 continue
 
-            logger.debug(f"  ✓ 创建: \"{item['title']}\"")
-            logger.verbose(f"[{idx}/{len(favorites)}] Syncing: {item['title']}")
-            _log(f"[{idx}/{len(favorites)}] Syncing: {item['title']}")
-            page_id = create_notion_page_with_content(database_id, item)
+            title = item.get("title", "Untitled")
+            logger.debug(f"  ✓ 创建: \"{title}\"")
+            logger.verbose(f"[{idx}/{len(favorites)}] Syncing: {title}")
+            _log(f"[{idx}/{len(favorites)}] Syncing: {title}")
+            page_id = create_notion_page_with_content(database_id, item, database_properties)
             
             # Mark as synced
             if note_url:

@@ -63,8 +63,9 @@ python app/main.py
 
 可选属性：
 - **Author** (Rich Text): 作者
-- **Created Date** (Date): 创建日期
 - **Tags** (Multi-select): 标签
+- **Content** (Rich Text): 正文摘要
+- **Publish Date** (Date): 小红书发布日期（可选；`Created Date` 如果是 Notion 的 Created time 自动字段，API 不能手动写入）
 
 ## 项目结构
 

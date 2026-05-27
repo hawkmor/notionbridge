@@ -4,8 +4,10 @@ import time
 import random
 from typing import List, Dict, Optional
 from cloakbrowser import launch, launch_persistent_context
-from logger import logger
-from dotenv import load_dotenv
+try:
+    from logger import logger
+except ImportError:
+    from app.logger import logger
 from app.config import Config
 
 # Cookie storage file
@@ -31,13 +33,13 @@ def interactive_login(timeout: int = 300) -> bool:
     
     try:
         # Use persistent context for better anti-detection and session persistence
-        profile_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "browser_profile")
+        profile_dir = os.path.abspath(Config.CLOAKBROWSER_PROFILE_DIR)
         os.makedirs(profile_dir, exist_ok=True)
         
         context = launch_persistent_context(
             profile_dir,
             headless=False,
-            humanize=True,
+            humanize=Config.CLOAKBROWSER_HUMANIZE,
             viewport={'width': 1280, 'height': 800},
         )
         page = context.new_page()
@@ -127,6 +129,68 @@ def _try_selectors(root, selector_list, all=False):
             continue
     return [] if all else None
 
+
+def _clean_author_text(text: str) -> str:
+    """Normalize author text extracted from XHS profile links."""
+    if not text:
+        return ""
+
+    lines = [line.strip() for line in str(text).splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    ignored = {
+        "关注", "已关注", "粉丝", "获赞与收藏", "小红书号", "作者",
+        "赞", "收藏", "评论", "分享",
+    }
+    for line in lines:
+        if line in ignored:
+            continue
+        if line.startswith("@"):
+            line = line[1:].strip()
+        if line:
+            return line[:200]
+
+    return ""
+
+
+def _extract_author(modal) -> str:
+    """Extract author from the note modal with profile-link fallbacks."""
+    author_elem = _try_selectors(modal, SELECTORS["author"])
+    author = _clean_author_text(author_elem.inner_text()) if author_elem else ""
+    if author:
+        return author
+
+    profile_links = _try_selectors(modal, 'a[href*="/user/profile/"]', all=True)
+    for link in profile_links:
+        try:
+            author = _clean_author_text(link.inner_text())
+            if author:
+                return author
+        except Exception:
+            continue
+
+    # Some XHS builds put the visible nickname near the avatar but outside the anchor text.
+    profile_containers = _try_selectors(
+        modal,
+        [
+            '[class*="author"]',
+            '[class*="user"]',
+            '[class*="creator"]',
+            '[class*="nickname"]',
+        ],
+        all=True,
+    )
+    for elem in profile_containers:
+        try:
+            author = _clean_author_text(elem.inner_text())
+            if author:
+                return author
+        except Exception:
+            continue
+
+    return ""
+
 def scrape_note_from_modal(page, item_element, captured_video_urls: List[str] = None) -> Dict:
     """
     Extract content from Xiaohongshu note modal/popup with improved robustness.
@@ -171,8 +235,7 @@ def scrape_note_from_modal(page, item_element, captured_video_urls: List[str] = 
         title = title_elem.inner_text().strip() if title_elem else "Untitled"
         
         # 3. Extract Author
-        author_elem = _try_selectors(modal, SELECTORS["author"])
-        author = author_elem.inner_text().strip() if author_elem else ""
+        author = _extract_author(modal)
         
         # 4. Extract Content (Text Blocks)
         content = []
@@ -510,19 +573,19 @@ def fetch_xhs_favorites() -> List[Dict]:
     
     if not board_url:
         logger.user("❌ XHS_BOARD_URL not set in .env file")
-        return get_mock_data()
+        raise ValueError("XHS_BOARD_URL is required when USE_REAL_SCRAPER=true")
     
     logger.verbose(f"🚀 Starting CloakBrowser scraper for board: {board_url}")
     
     try:
         # Use persistent context for better anti-detection
-        profile_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "browser_profile")
+        profile_dir = os.path.abspath(Config.CLOAKBROWSER_PROFILE_DIR)
         os.makedirs(profile_dir, exist_ok=True)
         
         context = launch_persistent_context(
             profile_dir,
             headless=headless,
-            humanize=True,
+            humanize=Config.CLOAKBROWSER_HUMANIZE,
             viewport={'width': 1280, 'height': 720},
         )
         
@@ -559,22 +622,23 @@ def fetch_xhs_favorites() -> List[Dict]:
                 logger.user("❌ Running in HEADLESS mode, cannot perform interactive login.")
                 logger.user("💡 Please run 'python get_cookies.py' on your local machine.")
                 context.close()
-                return get_mock_data()
+                raise RuntimeError("Xiaohongshu login verification failed in headless mode")
             else:
                 logger.user("🔄 Attempting interactive login...")
                 context.close()
-                interactive_login()
+                if not interactive_login():
+                    raise RuntimeError("Interactive login failed")
                 return fetch_xhs_favorites() # Recursive retry
         
         # 2. Access the board and scrape
         favorites = scrape_board_items(page, board_url)
         context.close()
         
-        return favorites or get_mock_data()
+        return favorites
         
     except Exception as e:
         logger.user(f"❌ Scraper error: {e}")
-        return get_mock_data()
+        raise
 
 def get_mock_data() -> List[Dict]:
     """Returns mock data for testing."""

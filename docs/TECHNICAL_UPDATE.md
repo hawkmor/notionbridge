@@ -96,23 +96,35 @@ def _notion_request(method: str, path: str, body: dict = None) -> dict:
 
 **原因：** 原代码在创建页面时直接包含 Tags，若属性不存在会验证失败
 
-**解决方案：** 分两步操作
+**解决方案：** 读取数据库 schema 后，仅在 `Tags` 属性真实存在且类型为 Multi-select 时写入
 
 ```python
-# 1. 先创建页面（不含 Tags）
-page = _notion_request("POST", "/pages", body)
+tags_name = _find_property(database_properties, ["Tags", "Tag", "标签"], "multi_select")
+if tags_name and tags:
+    properties[tags_name] = {
+        "multi_select": [{"name": tag[:100]} for tag in tags[:20]]
+    }
+```
 
-# 2. 单独更新 Tags（失败则跳过）
-try:
-    _notion_request("PATCH", f"/pages/{page_id}", {
-        "properties": {
-            "Tags": {
-                "multi_select": [{"name": tag} for tag in tags]
-            }
-        }
-    })
-except Exception:
-    logger.debug("Tags update skipped")
+### 2.4 字段与内容块写入修复
+
+同步前会读取 Notion 数据库 schema，只写入实际存在且类型匹配的属性：
+
+- `Name` / `Title` / `标题`：Title
+- `URL` / `Link` / `链接`：URL
+- `Author` / `作者`：Rich text
+- `Tags` / `标签`：Multi-select
+- `Content` / `Description` / `正文`：Rich text
+- `Publish Date` / `Date` / `日期`：Date
+
+注意：如果数据库里的 `Created Date` 是 Notion 的 `created_time` 自动字段，API 不能手动写入小红书发布日期。需要保存原始发布日期时，请新增一个真正的 Date 属性，例如 `Publish Date`。
+
+正文、图片、视频封面块已统一改为 raw HTTP：
+
+```python
+_notion_request("PATCH", f"/blocks/{page_id}/children", {
+    "children": blocks
+})
 ```
 
 ---
@@ -143,7 +155,7 @@ has_images = any(c["type"] == "image" for c in item.get("content", []))
 删除文件：
 - `app/xhs.py.original`, `app/xhs.py.old_backup`, `app/xhs.py.new`
 - `app/config.py.bak`, `get_cookies.py.bak_new`
-- `REFACTORING_PLAN.md`, `archive/` 目录
+- `archive/` 目录
 
 ---
 

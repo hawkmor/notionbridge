@@ -28,9 +28,16 @@ SELECTORS = {
     "author": [
         ".author-name",
         ".nickname",
+        ".username",
+        ".user-name",
+        ".name",
+        "[class*='nickname']",
+        "[class*='username']",
+        "[class*='user-name']",
         "[class*='author-name']",
+        "[class*='author'] [class*='name']",
+        "[class*='user'] [class*='name']",
         "a[href*='/user/profile/']",
-        ".username"
     ],
     "desc": [
         ".desc",
