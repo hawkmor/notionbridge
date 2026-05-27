@@ -6,12 +6,27 @@ import traceback
 from urllib.parse import urlparse, urlunparse
 
 from typing import List, Dict, Optional, Callable
-from notion_client import Client
 from logger import logger
 
 from app.config import Config
 from app.media import extract_video_frame, download_video
 from app.utils import load_synced_ids, save_synced_ids, is_already_synced
+
+# Notion API helpers (using raw requests for compatibility with notion-client 2.7.0+)
+NOTION_API_VERSION = "2022-06-28"
+
+def _notion_request(method: str, path: str, body: dict = None) -> dict:
+    """Make a raw Notion API request."""
+    api_key = Config.NOTION_API_KEY
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Notion-Version": NOTION_API_VERSION,
+        "Content-Type": "application/json"
+    }
+    url = f"https://api.notion.com/v1{path}"
+    response = requests.request(method, url, headers=headers, json=body, timeout=30)
+    response.raise_for_status()
+    return response.json()
 
 
 # =======================
@@ -32,7 +47,7 @@ def normalize_xhs_url(url: str) -> str:
         return url.strip().rstrip("/")
 
 
-def find_existing_page_id_by_url(notion: Client, database_id: str, url: str) -> Optional[str]:
+def find_existing_page_id_by_url(database_id: str, url: str) -> Optional[str]:
     """Return existing Notion page id whose URL property equals the given url (or normalized url)."""
     if not url:
         return None
@@ -45,14 +60,13 @@ def find_existing_page_id_by_url(notion: Client, database_id: str, url: str) -> 
 
     for candidate in candidates:
         try:
-            resp = notion.databases.query(
-                database_id=database_id,
-                filter={
+            resp = _notion_request("POST", f"/databases/{database_id}/query", {
+                "filter": {
                     "property": "URL",
-                    "url": {"equals": candidate},
+                    "url": {"equals": candidate}
                 },
-                page_size=1,
-            )
+                "page_size": 1
+            })
             results = resp.get("results") or []
             if results:
                 return results[0].get("id")
@@ -155,14 +169,12 @@ def upload_video_to_notion_api(notion: Client, page_id: str, video_path: str) ->
         complete_response.raise_for_status()
         print(f"  ✓ Upload completed")
         
-        # Step 4: Add video block to page using Notion SDK
+        # Step 4: Add video block to page using raw API
         print(f"  4️⃣ Adding video block to page...")
         
         try:
-            # Use Notion SDK directly (revert from requests.patch)
-            notion.blocks.children.append(
-                block_id=page_id,
-                children=[
+            _notion_request("PATCH", f"/blocks/{page_id}/children", {
+                "children": [
                     {
                         "object": "block",
                         "type": "video",
@@ -174,7 +186,7 @@ def upload_video_to_notion_api(notion: Client, page_id: str, video_path: str) ->
                         }
                     }
                 ]
-            )
+            })
             
             print(f"  ✅ Video uploaded and added to page!")
             return True
@@ -190,11 +202,11 @@ def upload_video_to_notion_api(notion: Client, page_id: str, video_path: str) ->
         return False
 
 
-def create_notion_page_with_content(notion: Client, database_id: str, item: Dict):
+def create_notion_page_with_content(database_id: str, item: Dict):
     """
     Create a Notion page with full content (text, images, videos).
     """
-    # Prepare properties for the database row
+    # Prepare properties for the database row (without Tags first)
     properties = {
         "Name": {
             "title": [
@@ -225,10 +237,6 @@ def create_notion_page_with_content(notion: Client, database_id: str, item: Dict
             ]
         }
     
-    # Note: Created Date and Tags are optional properties
-    # They will only be added if they exist in the Notion database
-    # The API will fail validation if these properties don't exist
-    
     # Cover image
     cover_data = None
     if item.get("cover_image"):
@@ -239,16 +247,46 @@ def create_notion_page_with_content(notion: Client, database_id: str, item: Dict
             }
         }
     
-    # Create the page first
-    page = notion.pages.create(
-        parent={"database_id": database_id},
-        properties=properties,
-        cover=cover_data
-    )
+    # Create the page first (without Tags to avoid validation errors)
+    body = {
+        "parent": {"database_id": database_id},
+        "properties": properties
+    }
+    if cover_data:
+        body["cover"] = cover_data
     
+    page = _notion_request("POST", "/pages", body)
     
     page_id = page["id"]
     logger.verbose(f"  ✓ Created page: {item['title']}")
+    
+    # Try to add Tags separately (if property exists in database)
+    if item.get("tags"):
+        tags_set = set(item["tags"])
+        # Also extract hashtags from text content
+        if item.get("content"):
+            import re
+            for content_item in item["content"]:
+                if content_item.get("type") == "text":
+                    text = content_item.get("content", "")
+                    hashtags = re.findall(r'#([^\s#]+)', text)
+                    for tag in hashtags:
+                        tags_set.add(tag)
+        
+        if tags_set:
+            try:
+                _notion_request("PATCH", f"/pages/{page_id}", {
+                    "properties": {
+                        "Tags": {
+                            "multi_select": [
+                                {"name": tag[:100]} for tag in sorted(tags_set)[:20]
+                            ]
+                        }
+                    }
+                })
+                logger.verbose(f"  ✓ Tags: {list(tags_set)[:5]}")
+            except Exception as e:
+                logger.debug(f"  ⚠️ Tags update failed (property may not exist): {e}")
     
     # Now add content blocks
     if item.get("content"):
@@ -335,31 +373,6 @@ def create_notion_page_with_content(notion: Client, database_id: str, item: Dict
                         }
                     }
                 })
-        
-        # Add tags at the end if available
-        if item.get("tags"):
-            blocks.append({
-                "object": "block",
-                "type": "divider",
-                "divider": {}
-            })
-            
-            tags_text = " ".join([f"#{tag}" for tag in item["tags"]])
-            blocks.append({
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [
-                        {
-                            "type": "text",
-                            "text": {
-                                "content": tags_text
-                            }
-                        }
-                    ],
-                    "color": "gray"
-                }
-            })
         
         # Append blocks to page (max 100 blocks per request)
         if blocks:
@@ -475,8 +488,6 @@ def push_to_notion(favorites: List[Dict], incremental: bool = True, log_callback
     if not api_key or not database_id:
         raise ValueError("Please set NOTION_API_KEY and NOTION_DATABASE_ID in .env file")
 
-    notion = Client(auth=api_key)
-
     # Load synced IDs
     synced_ids_path = Config.SYNCED_IDS_FILE
     # Use a set for fast lookup and to remove accidental duplicates in the json file
@@ -497,7 +508,7 @@ def push_to_notion(favorites: List[Dict], incremental: bool = True, log_callback
             # Always prevent duplicates by checking Notion first (works even in --full mode)
             existing_page_id = None
             if note_url:
-                existing_page_id = find_existing_page_id_by_url(notion, database_id, note_url)
+                existing_page_id = find_existing_page_id_by_url(database_id, note_url)
 
             # Incremental mode: skip if we've already synced (local cache) OR Notion already has it
             if incremental and note_url and (note_url in synced_ids or existing_page_id):
@@ -516,7 +527,7 @@ def push_to_notion(favorites: List[Dict], incremental: bool = True, log_callback
             logger.debug(f"  ✓ 创建: \"{item['title']}\"")
             logger.verbose(f"[{idx}/{len(favorites)}] Syncing: {item['title']}")
             _log(f"[{idx}/{len(favorites)}] Syncing: {item['title']}")
-            page_id = create_notion_page_with_content(notion, database_id, item)
+            page_id = create_notion_page_with_content(database_id, item)
             
             # Mark as synced
             if note_url:
