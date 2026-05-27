@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-05-27 - Tags 写入修复 + notion-client 兼容
+
+### Bug 修复
+- 修复 Tags 未写入 Notion 数据库的问题
+- 兼容 `notion-client 2.7.0` API 变更（改用 raw HTTP requests）
+- 移除 `notion.databases.query` 等已废弃方法调用
+- Tags 更新改为创建页面后单独写入（避免属性不存在时验证失败）
+
+### 技术细节
+- 新增 `_notion_request()` 辅助函数封装 Notion API 调用
+- `find_existing_page_id_by_url()` 改用 raw POST 请求
+- `create_notion_page_with_content()` 分两步：先创建页面，再更新 Tags
+- `upload_video_to_notion_api()` 改用 raw PATCH 请求
+
+---
+
 ## 2026-05-26 - CloakBrowser 集成
 
 ### 新增功能
