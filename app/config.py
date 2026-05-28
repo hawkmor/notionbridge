@@ -27,6 +27,10 @@ class Config:
     # ============================================
     NOTION_API_KEY = os.getenv('NOTION_API_KEY', '')
     NOTION_DATABASE_ID = os.getenv('NOTION_DATABASE_ID', '')
+    NOTION_PAGE_ICON_URL = os.getenv(
+        'NOTION_PAGE_ICON_URL',
+        'https://s3-us-west-2.amazonaws.com/public.notion-static.com/16787851-26e1-4354-ac60-8a3574f1182e/rednote.png'
+    )
     
     # ============================================
     # Xiaohongshu Configuration (REQUIRED)
@@ -111,6 +115,10 @@ class Config:
         # Re-read all env vars
         cls.NOTION_API_KEY = os.getenv('NOTION_API_KEY', '')
         cls.NOTION_DATABASE_ID = os.getenv('NOTION_DATABASE_ID', '')
+        cls.NOTION_PAGE_ICON_URL = os.getenv(
+            'NOTION_PAGE_ICON_URL',
+            'https://s3-us-west-2.amazonaws.com/public.notion-static.com/16787851-26e1-4354-ac60-8a3574f1182e/rednote.png'
+        )
         cls.XHS_BOARD_URL = os.getenv('XHS_BOARD_URL', '')
         cls.USE_REAL_SCRAPER = os.getenv('USE_REAL_SCRAPER', 'true').lower() == 'true'
         cls.HEADLESS_MODE = os.getenv('HEADLESS_MODE', 'true').lower() == 'true'

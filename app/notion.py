@@ -146,6 +146,17 @@ def _build_page_properties(item: Dict[str, Any], database_properties: Dict[str, 
     return properties
 
 
+def _page_icon_payload() -> Optional[Dict[str, Any]]:
+    """Build a Notion page icon payload from configuration."""
+    icon_url = (Config.NOTION_PAGE_ICON_URL or "").strip()
+    if not icon_url or icon_url.lower() == "none":
+        return None
+    return {
+        "type": "external",
+        "external": {"url": icon_url},
+    }
+
+
 def update_existing_page_properties(
     page_id: str,
     item: Dict[str, Any],
@@ -153,8 +164,14 @@ def update_existing_page_properties(
 ) -> None:
     """Refresh metadata for an already-synced page without touching page blocks."""
     properties = _build_page_properties(item, database_properties)
+    payload: Dict[str, Any] = {}
     if properties:
-        _notion_request("PATCH", f"/pages/{page_id}", {"properties": properties})
+        payload["properties"] = properties
+    icon = _page_icon_payload()
+    if icon:
+        payload["icon"] = icon
+    if payload:
+        _notion_request("PATCH", f"/pages/{page_id}", payload)
 
 
 def _collect_tags(item: Dict[str, Any]) -> List[str]:
@@ -370,6 +387,9 @@ def create_notion_page_with_content(
         "parent": {"database_id": database_id},
         "properties": properties
     }
+    icon = _page_icon_payload()
+    if icon:
+        body["icon"] = icon
     if cover_data:
         body["cover"] = cover_data
     
