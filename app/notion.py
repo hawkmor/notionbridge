@@ -417,9 +417,15 @@ def create_notion_page_with_content(
         
         # STEP 1: Upload ALL videos FIRST (they'll appear at the top of the page)
         first_video_path = None  # Track first video for cover extraction
+        skipped_video_urls = []
         
         for idx, video_item in enumerate(videos):
             video_url = video_item["url"]
+
+            if not Config.SYNC_VIDEO_UPLOADS:
+                skipped_video_urls.append(video_url)
+                logger.verbose("  ⏭️ Video upload skipped by SYNC_VIDEO_UPLOADS=false")
+                continue
             
             # Create videos folder
             videos_dir = os.path.join(os.getcwd(), "data", "downloaded_videos")
@@ -433,6 +439,14 @@ def create_notion_page_with_content(
             # Download and upload video
             if download_video(video_url, video_path):
                 logger.verbose(f"  💾 Video saved to: {video_path}")
+                file_size_mb = os.path.getsize(video_path) / 1024 / 1024
+                if file_size_mb > Config.MAX_VIDEO_UPLOAD_MB:
+                    skipped_video_urls.append(video_url)
+                    logger.debug(
+                        f"  ⏭️ Video upload skipped: {file_size_mb:.2f} MB "
+                        f"> MAX_VIDEO_UPLOAD_MB={Config.MAX_VIDEO_UPLOAD_MB:.2f}"
+                    )
+                    continue
                 
                 # Save first video path for cover extraction
                 if idx == 0:
@@ -449,6 +463,15 @@ def create_notion_page_with_content(
 
         # STEP 2: Now add images and text blocks (they'll appear AFTER videos)
         blocks = []
+
+        for video_url in skipped_video_urls:
+            blocks.append({
+                "object": "block",
+                "type": "bookmark",
+                "bookmark": {
+                    "url": video_url
+                }
+            })
         
         for content_item in images + texts:
             if content_item["type"] == "text":

@@ -6,6 +6,31 @@
 
 ---
 
+## 2026-05-28 更新
+
+### 小红书收藏夹分页修复
+
+旧抓取逻辑用当前 DOM 中的 `note-item` 数量判断收藏夹条目数。小红书收藏夹页面会虚拟化列表，DOM 中通常只保留首屏或当前可视区域附近的卡片，因此 135 条收藏夹可能只抓到约 29 条。
+
+新逻辑改为：
+- 从页面首屏 HTML 的 `boardFeedsMap` 中读取首批笔记和 cursor
+- 监听页面真实触发的 `/api/sns/web/v1/board/note` 分页响应
+- 滚动页面触发后续分页加载，并累计唯一 note id
+- 使用接口返回的 `xsec_token` 打开详情页，避免裸 `/explore/<id>` 直链返回 404
+
+### 视频上传保护
+
+新增配置：
+
+```env
+SYNC_VIDEO_UPLOADS=true
+MAX_VIDEO_UPLOAD_MB=100
+```
+
+`SYNC_VIDEO_UPLOADS=false` 时跳过视频上传，并把视频 URL 保留为 Notion bookmark。`MAX_VIDEO_UPLOAD_MB` 会跳过超大视频上传，避免 300MB+ 视频拖慢或中断同步。
+
+---
+
 ## 一、CloakBrowser 反检测集成
 
 ### 1.1 背景

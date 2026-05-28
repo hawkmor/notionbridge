@@ -2,6 +2,7 @@ import os
 import json
 import time
 import random
+from urllib.parse import urlparse, quote
 from typing import List, Dict, Optional
 from cloakbrowser import launch, launch_persistent_context
 try:
@@ -191,6 +192,234 @@ def _extract_author(modal) -> str:
 
     return ""
 
+def _first_cover_url(cover: Dict) -> str:
+    """Return the best usable cover URL from XHS API cover data."""
+    if not isinstance(cover, dict):
+        return ""
+    for key in ("url_default", "urlDefault", "url_pre", "urlPre", "url"):
+        value = cover.get(key)
+        if value:
+            return value
+    for item in cover.get("info_list") or cover.get("infoList") or []:
+        if isinstance(item, dict) and item.get("url"):
+            return item["url"]
+    return ""
+
+
+def _note_id_from_url(url: str) -> str:
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 2 and parts[-2] == "explore":
+        return parts[-1]
+    return ""
+
+
+def _board_id_from_url(board_url: str) -> str:
+    parsed = urlparse(board_url)
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 2 and parts[-2] == "board":
+        return parts[-1]
+    return ""
+
+
+def _normalize_api_note(raw_note: Dict) -> Optional[Dict]:
+    """Convert XHS board API note data into a stable summary object."""
+    if not isinstance(raw_note, dict):
+        return None
+
+    note_id = raw_note.get("noteId") or raw_note.get("note_id")
+    if not note_id:
+        return None
+
+    xsec_token = raw_note.get("xsecToken") or raw_note.get("xsec_token") or ""
+    clean_url = f"https://www.xiaohongshu.com/explore/{note_id}"
+    detail_url = clean_url
+    if xsec_token:
+        detail_url = f"{clean_url}?xsec_token={quote(xsec_token, safe='')}&xsec_source=pc_collect"
+
+    user = raw_note.get("user") or {}
+    return {
+        "note_id": note_id,
+        "title": raw_note.get("displayTitle") or raw_note.get("display_title") or "Untitled",
+        "url": clean_url,
+        "detail_url": detail_url,
+        "author": user.get("nickName") or user.get("nick_name") or "",
+        "cover_image": _first_cover_url(raw_note.get("cover") or {}),
+        "type": raw_note.get("type", ""),
+    }
+
+
+def _fetch_board_note_summaries(page, board_url: str) -> List[Dict]:
+    """
+    Fetch board notes from XHS initial state plus the board/note pagination API.
+
+    The board grid is virtualized, so DOM element count is not a reliable item count.
+    """
+    board_id = _board_id_from_url(board_url)
+    if not board_id:
+        logger.debug("  ⚠️ Could not parse board id from XHS_BOARD_URL")
+        return []
+
+    feed = None
+    try:
+        # The first page is SSR-hydrated into HTML. Reading it from HTML is more
+        # reliable than reading Vue's reactive proxy from Playwright.
+        html = page.content()
+        marker = f'"{board_id}":{{"cursor"'
+        marker_index = html.find(marker)
+        if marker_index >= 0:
+            start = html.find("{", marker_index + len(f'"{board_id}":') - 1)
+            if start >= 0:
+                feed, _ = json.JSONDecoder().raw_decode(html[start:])
+    except Exception as e:
+        logger.debug(f"  ⚠️ Failed to parse XHS initial board state: {e}")
+
+    if not feed or not feed.get("notes"):
+        logger.debug("  ⚠️ XHS initial board state missing; falling back to DOM scraping")
+        return []
+
+    api_notes: List[Dict] = []
+    api_pages = 0
+    api_has_more = bool(feed.get("hasMore"))
+
+    def capture_board_notes(response):
+        nonlocal api_pages, api_has_more
+        try:
+            if "/api/sns/web/v1/board/note" not in response.url:
+                return
+            payload = response.json()
+            data = payload.get("data") or {}
+            batch = data.get("notes") or []
+            if batch:
+                api_notes.extend(batch)
+            api_pages += 1
+            api_has_more = bool(data.get("has_more"))
+            logger.verbose(
+                f"   API page {api_pages}: {len(batch)} notes "
+                f"(has_more={api_has_more})"
+            )
+        except Exception as e:
+            logger.verbose(f"   ⚠️ Failed to read board/note response: {e}")
+
+    page.on("response", capture_board_notes)
+
+    max_api_scrolls = int(os.getenv("XHS_API_SCROLLS", "80"))
+    stable_needed = int(os.getenv("XHS_API_STABLE_ROUNDS", "8"))
+    stable_rounds = 0
+    last_seen_count = len(feed.get("notes") or [])
+
+    for i in range(max_api_scrolls):
+        try:
+            page.evaluate("window.scrollBy(0, window.innerHeight * 1.2)")
+            page.wait_for_timeout(1200)
+        except Exception as e:
+            logger.verbose(f"   ⚠️ API scroll {i+1} failed: {e}")
+            page.wait_for_timeout(800)
+
+        current_seen_count = len(feed.get("notes") or []) + len(api_notes)
+        if current_seen_count > last_seen_count:
+            stable_rounds = 0
+            last_seen_count = current_seen_count
+            logger.verbose(f"   API scroll {i+1}/{max_api_scrolls}: {current_seen_count} notes seen")
+        else:
+            stable_rounds += 1
+
+        at_bottom = False
+        try:
+            at_bottom = page.evaluate(
+                "() => Math.ceil(window.scrollY + window.innerHeight) >= document.documentElement.scrollHeight - 4"
+            )
+        except Exception:
+            pass
+
+        if stable_rounds >= stable_needed and (at_bottom or not api_has_more):
+            break
+
+    seen = set()
+    summaries = []
+    all_notes = list(feed.get("notes") or []) + api_notes
+    for raw_note in all_notes:
+        summary = _normalize_api_note(raw_note)
+        if not summary or summary["note_id"] in seen:
+            continue
+        seen.add(summary["note_id"])
+        summaries.append(summary)
+
+    logger.debug(
+        f"  ✓ Board API collected {len(summaries)} unique notes "
+        f"(pages={api_pages}, has_more={api_has_more})"
+    )
+    return summaries
+
+
+def _extract_note_from_root(page, root, fallback: Optional[Dict] = None) -> Dict:
+    """Extract note data from an already-open note detail page or modal."""
+    fallback = fallback or {}
+
+    url = fallback.get("url") or page.url.split("?")[0]
+    if "/explore/" not in url:
+        link_elem = root.query_selector('a[href*="/explore/"]') if root else None
+        if link_elem:
+            href = link_elem.get_attribute("href")
+            url = f"https://www.xiaohongshu.com{href}" if href.startswith("/") else href
+            url = url.split("?")[0]
+
+    title_elem = _try_selectors(root, SELECTORS["title"])
+    title = title_elem.inner_text().strip() if title_elem else fallback.get("title", "Untitled")
+
+    author = _extract_author(root) or fallback.get("author", "")
+
+    content = []
+    desc_area = _try_selectors(root, SELECTORS["desc"])
+    if desc_area:
+        text_lines = desc_area.inner_text().split("\n")
+        for line in text_lines:
+            clean_line = line.strip()
+            if clean_line:
+                content.append({"type": "text", "content": clean_line})
+
+    img_elements = _try_selectors(root, SELECTORS["image"], all=True)
+    seen_urls = set()
+    for img in img_elements:
+        try:
+            is_duplicate = img.evaluate("el => el.closest('.swiper-slide-duplicate') !== null")
+            if is_duplicate:
+                continue
+            src = img.get_attribute("src")
+            if not src or "avatar" in src.lower():
+                continue
+            clean_img_url = src.split("?")[0]
+            if clean_img_url not in seen_urls:
+                content.append({"type": "image", "url": clean_img_url})
+                seen_urls.add(clean_img_url)
+        except Exception:
+            continue
+
+    fallback_cover = fallback.get("cover_image", "")
+    if fallback_cover and not any(c.get("type") == "image" for c in content):
+        content.append({"type": "image", "url": fallback_cover})
+
+    tags = []
+    tag_elems = _try_selectors(root, SELECTORS["tags"], all=True)
+    if tag_elems:
+        tags = [t.inner_text().strip().replace("#", "") for t in tag_elems if t.inner_text().strip()]
+
+    date_elem = _try_selectors(root, SELECTORS["date"])
+    created_date = date_elem.inner_text().strip() if date_elem else ""
+
+    return {
+        "title": title,
+        "url": url,
+        "author": author,
+        "created_date": created_date,
+        "content": content,
+        "tags": list(set(tags)),
+        "cover_image": next((c["url"] for c in content if c["type"] == "image"), fallback_cover),
+    }
+
+
 def scrape_note_from_modal(page, item_element, captured_video_urls: List[str] = None) -> Dict:
     """
     Extract content from Xiaohongshu note modal/popup with improved robustness.
@@ -221,32 +450,8 @@ def scrape_note_from_modal(page, item_element, captured_video_urls: List[str] = 
         logger.verbose(f"    ✓ Modal opened")
         page.wait_for_timeout(500) # Short breath for layout to settle
 
-        # 1. Extract URL (Clean)
-        url = page.url.split('?')[0]
-        if '/explore/' not in url:
-            # Try to find a link inside modal if page URL hasn't updated
-            link_elem = modal.query_selector('a[href*="/explore/"]')
-            if link_elem:
-                href = link_elem.get_attribute('href')
-                url = f"https://www.xiaohongshu.com{href}" if href.startswith('/') else href
-        
-        # 2. Extract Title
-        title_elem = _try_selectors(modal, SELECTORS["title"])
-        title = title_elem.inner_text().strip() if title_elem else "Untitled"
-        
-        # 3. Extract Author
-        author = _extract_author(modal)
-        
-        # 4. Extract Content (Text Blocks)
-        content = []
-        desc_area = _try_selectors(modal, SELECTORS["desc"])
-        if desc_area:
-            # We want paragraphs but also keep it simple
-            text_lines = desc_area.inner_text().split('\n')
-            for line in text_lines:
-                clean_line = line.strip()
-                if clean_line:
-                    content.append({"type": "text", "content": clean_line})
+        note_data = _extract_note_from_root(page, modal)
+        content = note_data["content"]
 
         # 5. Extract Media (Images & Video)
         # Use captured video URLs if available (most reliable for video)
@@ -269,34 +474,6 @@ def scrape_note_from_modal(page, item_element, captured_video_urls: List[str] = 
                     video_found = True
         
         # Images (with strict de-duplication)
-        img_elements = _try_selectors(modal, SELECTORS["image"], all=True)
-        seen_urls = set()
-        
-        for img in img_elements:
-            try:
-                # Skip swiper clones/duplicates (critical for XHS)
-                is_duplicate = img.evaluate("el => el.closest('.swiper-slide-duplicate') !== null")
-                if is_duplicate: continue
-
-                src = img.get_attribute('src')
-                if not src or 'avatar' in src.lower(): continue
-                
-                clean_img_url = src.split('?')[0]
-                if clean_img_url not in seen_urls:
-                    content.append({"type": "image", "url": clean_img_url})
-                    seen_urls.add(clean_img_url)
-            except:
-                continue
-
-        # 6. Extract Tags & Date
-        tags = []
-        tag_elems = _try_selectors(modal, SELECTORS["tags"], all=True)
-        if tag_elems:
-            tags = [t.inner_text().strip().replace('#', '') for t in tag_elems if t.inner_text().strip()]
-            
-        date_elem = _try_selectors(modal, SELECTORS["date"])
-        created_date = date_elem.inner_text().strip() if date_elem else ""
-
         # Close Modal (Press ESC or Click)
         try:
             page.keyboard.press('Escape')
@@ -306,20 +483,59 @@ def scrape_note_from_modal(page, item_element, captured_video_urls: List[str] = 
             close_btn = _try_selectors(modal, SELECTORS["close_button"])
             if close_btn: close_btn.click()
 
-        return {
-            "title": title,
-            "url": url,
-            "author": author,
-            "created_date": created_date,
-            "content": content,
-            "tags": list(set(tags)), # unique
-            "cover_image": next((c["url"] for c in content if c["type"] == "image"), "")
-        }
+        note_data["content"] = content
+        note_data["cover_image"] = next((c["url"] for c in content if c["type"] == "image"), "")
+        return note_data
         
     except Exception as e:
         print(f"    ✗ Extraction Error: {e}")
         try: page.keyboard.press('Escape') 
         except: pass
+        return None
+
+
+def scrape_note_from_url(page, summary: Dict, captured_video_urls: List[str] = None) -> Optional[Dict]:
+    """Open a note detail URL with xsec_token and extract its full content."""
+    try:
+        detail_url = summary.get("detail_url") or summary.get("url")
+        page.goto(detail_url, wait_until="domcontentloaded")
+        page.wait_for_timeout(1800)
+
+        root = None
+        for sel in SELECTORS["modal_container"]:
+            try:
+                root = page.query_selector(sel)
+                if root:
+                    break
+            except Exception:
+                continue
+        if not root:
+            root = page.query_selector("main") or page.query_selector("#app") or page
+
+        note_data = _extract_note_from_root(page, root, summary)
+        content = note_data["content"]
+
+        if captured_video_urls:
+            valid_videos = [u for u in captured_video_urls if ".mp4" in u or "video" in u]
+            if valid_videos and not any(c.get("type") == "video" for c in content):
+                content.insert(0, {"type": "video", "url": valid_videos[-1]})
+                logger.verbose("    🎥 Video captured from network")
+
+        video_tag = _try_selectors(root, SELECTORS["video_tag"])
+        if video_tag and not any(c.get("type") == "video" for c in content):
+            v_src = video_tag.get_attribute("src")
+            if v_src and not v_src.startswith("blob:"):
+                content.insert(0, {"type": "video", "url": v_src})
+
+        note_data["content"] = content
+        note_data["url"] = summary.get("url") or note_data["url"]
+        note_data["cover_image"] = next(
+            (c["url"] for c in content if c["type"] == "image"),
+            summary.get("cover_image", ""),
+        )
+        return note_data
+    except Exception as e:
+        print(f"    ✗ URL Extraction Error: {e}")
         return None
 
 
@@ -358,6 +574,40 @@ def scrape_board_items(page, board_url: str) -> List[Dict]:
         
         current_url = page.url
         print(f"Current URL: {current_url}")
+
+        # Preferred path: use XHS board pagination API to avoid virtualized DOM loss.
+        board_summaries = _fetch_board_note_summaries(page, board_url)
+        if board_summaries:
+            max_process = int(os.getenv("XHS_MAX_ITEMS", "200"))
+            if len(board_summaries) > max_process:
+                logger.verbose(f"ℹ️ Capping API notes to first {max_process} (from {len(board_summaries)})")
+                board_summaries = board_summaries[:max_process]
+
+            logger.debug(f"Found {len(board_summaries)} API notes, will fetch full content for each...\n")
+
+            for idx, summary in enumerate(board_summaries):
+                try:
+                    print(f"\n[{idx+1}/{len(board_summaries)}] Processing item {idx+1}...")
+                    captured_video_urls.clear()
+                    note_data = scrape_note_from_url(page, summary, captured_video_urls)
+                    if note_data:
+                        favorites.append(note_data)
+                    else:
+                        print(f"    ⚠️ Skipping item {idx+1} (failed to extract)")
+
+                    if idx < len(board_summaries) - 1:
+                        wait_time = random.uniform(1.0, 2.0)
+                        logger.verbose(f"    ⏳ Waiting {wait_time:.1f}s before next item...")
+                        time.sleep(wait_time)
+                except Exception as e:
+                    print(f"  ⚠️ Failed to process item {idx}: {e}")
+                    continue
+
+            if favorites:
+                logger.debug(f"✅ Successfully extracted {len(favorites)} favorites")
+            else:
+                print("⚠️ No valid items extracted from API note list")
+            return favorites
         
         # Scroll to load lazy-loaded content
         logger.verbose("📜 Scrolling to load all items...")
@@ -471,7 +721,7 @@ def scrape_board_items(page, board_url: str) -> List[Dict]:
                 selector_used = 'a[href*="/explore/"] (wrapped)'
 
         # Hard cap to avoid huge runs (configurable)
-        max_process = int(os.getenv('XHS_MAX_ITEMS', '80'))
+        max_process = int(os.getenv('XHS_MAX_ITEMS', '200'))
         if len(items) > max_process:
             logger.verbose(f"ℹ️ Capping items to first {max_process} (from {len(items)})")
             items = items[:max_process]

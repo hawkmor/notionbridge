@@ -16,6 +16,13 @@ if os.path.exists(env_path):
     load_dotenv(env_path)
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 class Config:
     """
     Centralized configuration management.
@@ -44,6 +51,8 @@ class Config:
     HEADLESS_MODE = os.getenv('HEADLESS_MODE', 'true').lower() == 'true'
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'user')
     ENV_PATH = env_path
+    SYNC_VIDEO_UPLOADS = _env_bool('SYNC_VIDEO_UPLOADS', True)
+    MAX_VIDEO_UPLOAD_MB = float(os.getenv('MAX_VIDEO_UPLOAD_MB', '100'))
     
     # CloakBrowser Anti-Detection Settings
     CLOAKBROWSER_HUMANIZE = os.getenv('CLOAKBROWSER_HUMANIZE', 'true').lower() == 'true'
@@ -123,6 +132,8 @@ class Config:
         cls.USE_REAL_SCRAPER = os.getenv('USE_REAL_SCRAPER', 'true').lower() == 'true'
         cls.HEADLESS_MODE = os.getenv('HEADLESS_MODE', 'true').lower() == 'true'
         cls.LOG_LEVEL = os.getenv('LOG_LEVEL', 'user')
+        cls.SYNC_VIDEO_UPLOADS = _env_bool('SYNC_VIDEO_UPLOADS', True)
+        cls.MAX_VIDEO_UPLOAD_MB = float(os.getenv('MAX_VIDEO_UPLOAD_MB', '100'))
         cls.CLOAKBROWSER_HUMANIZE = os.getenv('CLOAKBROWSER_HUMANIZE', 'true').lower() == 'true'
         cls.CLOAKBROWSER_PROFILE_DIR = os.getenv('CLOAKBROWSER_PROFILE_DIR', './browser_profile')
 
